@@ -1,0 +1,439 @@
+name: Build BloxAura Overlay APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate Android project files
+        run: |
+          mkdir -p app/src/main/java/com/bloxaura/overlay
+
+          cat << 'BLOXEOF' > settings.gradle.kts
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "BloxAuraOverlay"
+          include(":app")
+          BLOXEOF
+
+          cat << 'BLOXEOF' > build.gradle.kts
+          plugins {
+              id("com.android.application") version "8.4.2" apply false
+          }
+          BLOXEOF
+
+          cat << 'BLOXEOF' > gradle.properties
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=false
+          BLOXEOF
+
+          cat << 'BLOXEOF' > app/build.gradle.kts
+          plugins {
+              id("com.android.application")
+          }
+
+          android {
+              namespace = "com.bloxaura.overlay"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.bloxaura.overlay"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                  }
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+          }
+          BLOXEOF
+
+          cat << 'BLOXEOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+              <queries>
+                  <package android:name="com.roblox.client" />
+              </queries>
+
+              <application
+                  android:label="BloxAura Overlay"
+                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".VisualOverlayService"
+                      android:exported="false"
+                      android:foregroundServiceType="specialUse">
+                      <property
+                          android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                          android:value="Visual overlay and crosshair over games" />
+                  </service>
+              </application>
+          </manifest>
+          BLOXEOF
+
+          cat << 'BLOXEOF' > app/src/main/java/com/bloxaura/overlay/MainActivity.java
+          package com.bloxaura.overlay;
+
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.graphics.Color;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.provider.Settings;
+          import android.view.View;
+          import android.widget.Button;
+          import android.widget.LinearLayout;
+          import android.widget.TextView;
+          import android.widget.Toast;
+
+          public class MainActivity extends Activity {
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+
+                  LinearLayout root = new LinearLayout(this);
+                  root.setOrientation(LinearLayout.VERTICAL);
+                  root.setBackgroundColor(0xFF0B0E14);
+                  root.setPadding(48, 96, 48, 48);
+
+                  TextView title = new TextView(this);
+                  title.setText("BloxAura Overlay");
+                  title.setTextSize(22f);
+                  title.setTextColor(Color.WHITE);
+                  title.setPadding(0, 0, 0, 16);
+
+                  TextView subtitle = new TextView(this);
+                  subtitle.setText("Пресет: Future Cinema · Фильтр и прицел поверх оригинального Roblox");
+                  subtitle.setTextSize(14f);
+                  subtitle.setTextColor(0xFF94A3B8);
+                  subtitle.setPadding(0, 0, 0, 36);
+
+                  Button launchBtn = new Button(this);
+                  launchBtn.setText("Включить визуалы и открыть Roblox");
+                  launchBtn.setOnClickListener(new View.OnClickListener() {
+                      @Override
+                      public void onClick(View v) {
+                          if (!Settings.canDrawOverlays(MainActivity.this)) {
+                              Intent permIntent = new Intent(
+                                      Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                      Uri.parse("package:" + getPackageName())
+                              );
+                              startActivity(permIntent);
+                              return;
+                          }
+
+                          Intent svcIntent = new Intent(MainActivity.this, VisualOverlayService.class);
+                          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                              startForegroundService(svcIntent);
+                          } else {
+                              startService(svcIntent);
+                          }
+
+                          try {
+                              Intent robloxIntent = new Intent(
+                                      Intent.ACTION_VIEW,
+                                      Uri.parse("roblox://navigation/home")
+                              );
+                              startActivity(robloxIntent);
+                          } catch (Exception ignored) {
+                              Toast.makeText(
+                                      MainActivity.this,
+                                      "Оверлей включён. Откройте установленный Roblox.",
+                                      Toast.LENGTH_SHORT
+                              ).show();
+                          }
+                      }
+                  });
+
+                  Button stopBtn = new Button(this);
+                  stopBtn.setText("Отключить оверлей");
+                  stopBtn.setOnClickListener(new View.OnClickListener() {
+                      @Override
+                      public void onClick(View v) {
+                          stopService(new Intent(MainActivity.this, VisualOverlayService.class));
+                      }
+                  });
+
+                  root.addView(title);
+                  root.addView(subtitle);
+                  root.addView(launchBtn);
+                  root.addView(stopBtn);
+                  setContentView(root);
+              }
+          }
+          BLOXEOF
+
+          cat << 'BLOXEOF' > app/src/main/java/com/bloxaura/overlay/VisualOverlayService.java
+          package com.bloxaura.overlay;
+
+          import android.app.Notification;
+          import android.app.NotificationChannel;
+          import android.app.NotificationManager;
+          import android.app.Service;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.graphics.Canvas;
+          import android.graphics.Color;
+          import android.graphics.Paint;
+          import android.graphics.PixelFormat;
+          import android.graphics.RadialGradient;
+          import android.graphics.Shader;
+          import android.os.Build;
+          import android.os.IBinder;
+          import android.view.Gravity;
+          import android.view.View;
+          import android.view.WindowManager;
+          import android.widget.TextView;
+
+          /**
+           * Легальный визуальный оверлей поверх оригинального Roblox (Play Store).
+           * Без внешних библиотек (чистый Android SDK), без правки APK и без чтения памяти.
+           */
+          public class VisualOverlayService extends Service {
+
+              private WindowManager windowManager;
+              private VisualCanvasView filterLayer;
+              private TextView floatingButton;
+
+              private boolean filterEnabled = true;
+              private final boolean crosshairEnabled = false;
+
+              @Override
+              public void onCreate() {
+                  super.onCreate();
+                  startForegroundNotification();
+                  windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
+
+                  filterLayer = new VisualCanvasView(this);
+                  filterLayer.tintColor = 0x141D4ED8;
+                  filterLayer.crosshairColor = 0xFF60A5FA;
+                  filterLayer.crosshairStyle = "dot";
+                  filterLayer.crosshairSizeDp = 8f;
+                  filterLayer.crosshairGapDp = 4f;
+                  filterLayer.crosshairStrokeDp = 4.5f;
+                  filterLayer.vignetteAlpha = 0.58f;
+                  filterLayer.showFilter = filterEnabled;
+                  filterLayer.showCrosshair = crosshairEnabled;
+                  filterLayer.showHudBadge = true;
+                  filterLayer.hudLabel = "BloxAura · Future Cinema";
+
+                  WindowManager.LayoutParams overlayParams = new WindowManager.LayoutParams(
+                          WindowManager.LayoutParams.MATCH_PARENT,
+                          WindowManager.LayoutParams.MATCH_PARENT,
+                          WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                          WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                                  | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                                  | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                          PixelFormat.TRANSLUCENT
+                  );
+                  windowManager.addView(filterLayer, overlayParams);
+
+                  floatingButton = new TextView(this);
+                  floatingButton.setText("BloxAura · Future Cinema");
+                  floatingButton.setTextSize(11f);
+                  floatingButton.setTextColor(Color.WHITE);
+                  floatingButton.setPadding(24, 14, 24, 14);
+                  floatingButton.setBackgroundColor(0xCC121620);
+                  floatingButton.setOnClickListener(new View.OnClickListener() {
+                      @Override
+                      public void onClick(View v) {
+                          filterEnabled = !filterEnabled;
+                          filterLayer.showFilter = filterEnabled;
+                          filterLayer.invalidate();
+                      }
+                  });
+
+                  WindowManager.LayoutParams btnParams = new WindowManager.LayoutParams(
+                          WindowManager.LayoutParams.WRAP_CONTENT,
+                          WindowManager.LayoutParams.WRAP_CONTENT,
+                          WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                          WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                          PixelFormat.TRANSLUCENT
+                  );
+                  btnParams.gravity = Gravity.TOP | Gravity.START;
+                  btnParams.x = 24;
+                  btnParams.y = 120;
+                  windowManager.addView(floatingButton, btnParams);
+              }
+
+              @Override
+              public void onDestroy() {
+                  if (filterLayer != null) {
+                      windowManager.removeView(filterLayer);
+                  }
+                  if (floatingButton != null) {
+                      windowManager.removeView(floatingButton);
+                  }
+                  super.onDestroy();
+              }
+
+              @Override
+              public IBinder onBind(Intent intent) {
+                  return null;
+              }
+
+              private void startForegroundNotification() {
+                  String channelId = "bloxaura_overlay";
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                      NotificationChannel ch = new NotificationChannel(
+                              channelId,
+                              "BloxAura Visuals",
+                              NotificationManager.IMPORTANCE_LOW
+                      );
+                      NotificationManager nm = getSystemService(NotificationManager.class);
+                      if (nm != null) {
+                          nm.createNotificationChannel(ch);
+                      }
+                      Notification notif = new Notification.Builder(this, channelId)
+                              .setContentTitle("BloxAura активен")
+                              .setContentText("Пресет: Future Cinema (Vulkan)")
+                              .setSmallIcon(android.R.drawable.ic_menu_view)
+                              .build();
+                      startForeground(101, notif);
+                  }
+              }
+
+              private static class VisualCanvasView extends View {
+                  int tintColor = 0;
+                  int crosshairColor = Color.WHITE;
+                  String crosshairStyle = "circle-cross";
+                  float crosshairSizeDp = 8f;
+                  float crosshairGapDp = 4f;
+                  float crosshairStrokeDp = 2f;
+                  float vignetteAlpha = 0.25f;
+                  boolean showFilter = true;
+                  boolean showCrosshair = true;
+                  boolean showHudBadge = true;
+                  String hudLabel = "BloxAura";
+
+                  private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+                  private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+                  VisualCanvasView(Context context) {
+                      super(context);
+                      textPaint.setColor(Color.WHITE);
+                  }
+
+                  @Override
+                  protected void onDraw(Canvas canvas) {
+                      super.onDraw(canvas);
+                      float density = getResources().getDisplayMetrics().density;
+
+                      if (showFilter && Color.alpha(tintColor) > 0) {
+                          canvas.drawColor(tintColor);
+                      }
+
+                      if (showFilter && vignetteAlpha > 0.01f) {
+                          float cx = getWidth() / 2f;
+                          float cy = getHeight() / 2f;
+                          float radius = Math.max(getWidth(), getHeight()) * 0.72f;
+                          paint.setStyle(Paint.Style.FILL);
+                          paint.setShader(new RadialGradient(
+                                  cx, cy, radius,
+                                  new int[]{Color.TRANSPARENT, Color.argb(Math.round(vignetteAlpha * 255), 0, 0, 0)},
+                                  new float[]{0.55f, 1f},
+                                  Shader.TileMode.CLAMP
+                          ));
+                          canvas.drawRect(0f, 0f, getWidth(), getHeight(), paint);
+                          paint.setShader(null);
+                      }
+
+                      if (showHudBadge) {
+                          textPaint.setTextSize(12f * density);
+                          canvas.drawText(hudLabel, 24f * density, 36f * density, textPaint);
+                      }
+
+                      if (showCrosshair) {
+                          float cx = getWidth() / 2f;
+                          float cy = getHeight() / 2f;
+                          float size = crosshairSizeDp * density;
+                          float gap = crosshairGapDp * density;
+                          float stroke = crosshairStrokeDp * density;
+                          paint.setColor(crosshairColor);
+                          paint.setStrokeWidth(stroke);
+                          paint.setStrokeCap(Paint.Cap.ROUND);
+
+                          if ("dot".equals(crosshairStyle)) {
+                              paint.setStyle(Paint.Style.FILL);
+                              canvas.drawCircle(cx, cy, Math.max(2f * density, stroke * 1.3f), paint);
+                          } else if ("t-shape".equals(crosshairStyle)) {
+                              paint.setStyle(Paint.Style.STROKE);
+                              canvas.drawLine(cx, cy + gap, cx, cy + gap + size, paint);
+                              canvas.drawLine(cx - gap - size, cy, cx - gap, cy, paint);
+                              canvas.drawLine(cx + gap, cy, cx + gap + size, cy, paint);
+                          } else {
+                              paint.setStyle(Paint.Style.STROKE);
+                              canvas.drawLine(cx, cy - gap - size, cx, cy - gap, paint);
+                              canvas.drawLine(cx, cy + gap, cx, cy + gap + size, paint);
+                              canvas.drawLine(cx - gap - size, cy, cx - gap, cy, paint);
+                              canvas.drawLine(cx + gap, cy, cx + gap + size, cy, paint);
+                              if ("circle-cross".equals(crosshairStyle)) {
+                                  paint.setStrokeWidth(Math.max(1f * density, stroke * 0.75f));
+                                  canvas.drawCircle(cx, cy, gap + size * 0.75f, paint);
+                              }
+                          }
+                      }
+                  }
+              }
+          }
+          BLOXEOF
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Build Debug APK
+        run: gradle assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: BloxAuraOverlay-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
