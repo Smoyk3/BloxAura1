@@ -9,20 +9,493 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Unpack ZIP
-        run: unzip -o "BloxAuraOverlay-Android (3).zip" -d .
+      - name: Generate BloxAura v2 Android Project
+        run: |
+          mkdir -p app/src/main/java/com/bloxaura/overlay
+
+          cat << 'BLOXEOF' > settings.gradle.kts
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "BloxAuraOverlay"
+          include(":app")
+          BLOXEOF
+
+          cat << 'BLOXEOF' > build.gradle.kts
+          plugins { id("com.android.application") version "8.4.2" apply false }
+          BLOXEOF
+
+          cat << 'BLOXEOF' > gradle.properties
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=false
+          BLOXEOF
+
+          cat << 'BLOXEOF' > app/build.gradle.kts
+          plugins { id("com.android.application") }
+          android {
+              namespace = "com.bloxaura.overlay"
+              compileSdk = 34
+              defaultConfig {
+                  applicationId = "com.bloxaura.overlay"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "2.0"
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+          }
+          BLOXEOF
+
+          cat << 'BLOXEOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+              <queries><package android:name="com.roblox.client" /></queries>
+              <application android:label="BloxAura" android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+                  <activity android:name=".MainActivity" android:exported="true" android:windowSoftInputMode="adjustResize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  <service android:name=".VisualOverlayService" android:exported="false" android:foregroundServiceType="specialUse">
+                      <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="Visual overlay and crosshair over games" />
+                  </service>
+              </application>
+          </manifest>
+          BLOXEOF
+
+          cat << 'BLOXEOF' > app/src/main/java/com/bloxaura/overlay/VisualOverlayService.java
+          package com.bloxaura.overlay;
+
+          import android.app.*;
+          import android.content.*;
+          import android.graphics.*;
+          import android.graphics.drawable.GradientDrawable;
+          import android.os.*;
+          import android.view.*;
+          import android.widget.TextView;
+
+          public class VisualOverlayService extends Service {
+              public static final String PREFS = "bloxaura_prefs";
+              public static volatile boolean isRunning = false;
+              private WindowManager wm;
+              private OverlayCanvas layer;
+              private TextView pill;
+              private WindowManager.LayoutParams pillLp;
+              private boolean filterOn = true;
+
+              @Override public void onCreate() {
+                  super.onCreate();
+                  isRunning = true;
+                  startNotif();
+                  wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+                  layer = new OverlayCanvas(this);
+                  WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                          -1, -1, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                          WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                          PixelFormat.TRANSLUCENT);
+                  wm.addView(layer, lp);
+
+                  pill = new TextView(this);
+                  pill.setTextSize(11f);
+                  pill.setTextColor(Color.WHITE);
+                  pill.setPadding(dp(12), dp(7), dp(12), dp(7));
+                  GradientDrawable bg = new GradientDrawable();
+                  bg.setColor(0xE6121620);
+                  bg.setCornerRadius(dp(20));
+                  bg.setStroke(dp(1), 0x6638BDF8);
+                  pill.setBackground(bg);
+
+                  pillLp = new WindowManager.LayoutParams(-2, -2, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                          WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT);
+                  pillLp.gravity = Gravity.TOP | Gravity.START;
+                  pillLp.x = dp(12);
+                  pillLp.y = dp(64);
+                  pill.setOnTouchListener(new View.OnTouchListener() {
+                      int sx, sy; float tx, ty; boolean moved;
+                      @Override public boolean onTouch(View v, MotionEvent e) {
+                          if (e.getAction() == MotionEvent.ACTION_DOWN) {
+                              sx = pillLp.x; sy = pillLp.y; tx = e.getRawX(); ty = e.getRawY(); moved = false; return true;
+                          } else if (e.getAction() == MotionEvent.ACTION_MOVE) {
+                              int dx = Math.round(e.getRawX() - tx), dy = Math.round(e.getRawY() - ty);
+                              if (Math.abs(dx) > 8 || Math.abs(dy) > 8) moved = true;
+                              pillLp.x = sx + dx; pillLp.y = sy + dy;
+                              wm.updateViewLayout(pill, pillLp); return true;
+                          } else if (e.getAction() == MotionEvent.ACTION_UP && !moved) {
+                              filterOn = !filterOn;
+                              getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean("filterOn", filterOn).apply();
+                              applyPrefs(); return true;
+                          }
+                          return false;
+                      }
+                  });
+                  wm.addView(pill, pillLp);
+                  applyPrefs();
+              }
+
+              @Override public int onStartCommand(Intent intent, int flags, int startId) { applyPrefs(); return START_STICKY; }
+
+              private void applyPrefs() {
+                  SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
+                  String preset = p.getString("preset", "Future Cinema");
+                  filterOn = p.getBoolean("filterOn", true);
+                  int fCol = p.getInt("fCol", 0xFF1D4ED8);
+                  float fOp = p.getFloat("fOp", 0.10f);
+                  layer.tint = Color.argb(Math.round(Math.min(0.65f, fOp) * 255f), Color.red(fCol), Color.green(fCol), Color.blue(fCol));
+                  layer.showFilter = filterOn;
+                  layer.vignette = p.getFloat("vig", 0.25f);
+                  layer.showCross = p.getBoolean("crossOn", true);
+                  layer.crossCol = p.getInt("crossCol", 0xFF60A5FA);
+                  layer.crossStyle = p.getString("crossStyle", "circle-cross");
+                  layer.crossSz = p.getFloat("crossSz", 8f);
+                  layer.crossTh = p.getFloat("crossTh", 2f);
+                  layer.showHud = p.getBoolean("hudOn", true);
+                  layer.hudCorner = p.getString("hudCorner", "top-left");
+                  int fps = p.getInt("fps", 120);
+                  layer.hudText = "BloxAura · " + preset + " · " + p.getString("api", "Vulkan") + " " + (fps == 0 ? "MAX" : fps) + " FPS";
+                  layer.invalidate();
+                  pill.setText((filterOn ? "● " : "○ ") + "BloxAura · " + preset);
+              }
+
+              private int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
+
+              @Override public void onDestroy() {
+                  isRunning = false;
+                  try { wm.removeView(layer); } catch (Exception ignored) {}
+                  try { wm.removeView(pill); } catch (Exception ignored) {}
+                  super.onDestroy();
+              }
+
+              @Override public IBinder onBind(Intent intent) { return null; }
+
+              private void startNotif() {
+                  if (Build.VERSION.SDK_INT >= 26) {
+                      NotificationManager nm = getSystemService(NotificationManager.class);
+                      if (nm != null) nm.createNotificationChannel(new NotificationChannel("bloxaura", "BloxAura", NotificationManager.IMPORTANCE_LOW));
+                      startForeground(101, new Notification.Builder(this, "bloxaura").setContentTitle("BloxAura активен").setSmallIcon(android.R.drawable.ic_menu_view).build());
+                  }
+              }
+
+              static class OverlayCanvas extends View {
+                  int tint = 0x1A1D4ED8, crossCol = 0xFF60A5FA;
+                  float vignette = 0.25f, crossSz = 8f, crossTh = 2f;
+                  boolean showFilter = true, showCross = true, showHud = true;
+                  String crossStyle = "circle-cross", hudCorner = "top-left", hudText = "BloxAura";
+                  final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG), tp = new Paint(Paint.ANTI_ALIAS_FLAG), bp = new Paint(Paint.ANTI_ALIAS_FLAG);
+                  OverlayCanvas(Context c) { super(c); tp.setColor(Color.WHITE); bp.setColor(0xB80B0E14); }
+                  @Override protected void onDraw(Canvas cv) {
+                      float d = getResources().getDisplayMetrics().density, w = getWidth(), h = getHeight();
+                      if (showFilter && Color.alpha(tint) > 0) cv.drawColor(tint);
+                      if (showFilter && vignette > 0.01f) {
+                          p.setStyle(Paint.Style.FILL);
+                          p.setShader(new RadialGradient(w/2f, h/2f, Math.max(w,h)*0.72f, new int[]{0, Color.argb(Math.round(vignette*255),0,0,0)}, new float[]{0.55f,1f}, Shader.TileMode.CLAMP));
+                          cv.drawRect(0, 0, w, h, p); p.setShader(null);
+                      }
+                      if (showHud) {
+                          tp.setTextSize(11f*d); float tw = tp.measureText(hudText), bw = tw + 20f*d, bh = 26f*d, m = 14f*d;
+                          float x = hudCorner.contains("right") ? w-bw-m : m, y = hudCorner.contains("bottom") ? h-bh-m : 34f*d;
+                          cv.drawRoundRect(new RectF(x, y, x+bw, y+bh), 8f*d, 8f*d, bp);
+                          cv.drawText(hudText, x+10f*d, y+17f*d, tp);
+                      }
+                      if (showCross) {
+                          float cx = w/2f, cy = h/2f, sz = crossSz*d, gp = 4f*d, st = crossTh*d;
+                          p.setColor(crossCol); p.setStrokeWidth(st); p.setStrokeCap(Paint.Cap.ROUND);
+                          if ("dot".equals(crossStyle)) { p.setStyle(Paint.Style.FILL); cv.drawCircle(cx, cy, Math.max(2f*d, st*1.3f), p); }
+                          else if ("t-shape".equals(crossStyle)) { p.setStyle(Paint.Style.STROKE); cv.drawLine(cx,cy+gp,cx,cy+gp+sz,p); cv.drawLine(cx-gp-sz,cy,cx-gp,cy,p); cv.drawLine(cx+gp,cy,cx+gp+sz,cy,p); }
+                          else {
+                              p.setStyle(Paint.Style.STROKE);
+                              cv.drawLine(cx,cy-gp-sz,cx,cy-gp,p); cv.drawLine(cx,cy+gp,cx,cy+gp+sz,p);
+                              cv.drawLine(cx-gp-sz,cy,cx-gp,cy,p); cv.drawLine(cx+gp,cy,cx+gp+sz,cy,p);
+                              if ("circle-cross".equals(crossStyle)) { p.setStrokeWidth(Math.max(1f*d, st*0.75f)); cv.drawCircle(cx, cy, gp+sz*0.75f, p); }
+                          }
+                      }
+                  }
+              }
+          }
+          BLOXEOF
+
+          cat << 'BLOXEOF' > app/src/main/java/com/bloxaura/overlay/MainActivity.java
+          package com.bloxaura.overlay;
+
+          import android.app.Activity;
+          import android.content.*;
+          import android.graphics.*;
+          import android.graphics.drawable.GradientDrawable;
+          import android.net.Uri;
+          import android.os.*;
+          import android.provider.Settings;
+          import android.view.*;
+          import android.widget.*;
+
+          public class MainActivity extends Activity {
+              static class Preset { String n, l; int top, hor, col; float op, vig;
+                  Preset(String n, int top, int hor, int col, float op, float vig, String l) { this.n=n;this.top=top;this.hor=hor;this.col=col;this.op=op;this.vig=vig;this.l=l; } }
+              final Preset[] presets = {
+                  new Preset("Future Cinema", 0xFF1B355C, 0xFFC98A63, 0xFF1D4ED8, 0.10f, 0.25f, "Future"),
+                  new Preset("Arctic Crisp", 0xFF17375E, 0xFF98C4E8, 0xFF38BDF8, 0.09f, 0.15f, "Future"),
+                  new Preset("Golden Sunset", 0xFF242347, 0xFFE88B5A, 0xFFF59E0B, 0.14f, 0.28f, "Future"),
+                  new Preset("Cyber Twilight", 0xFF090D1A, 0xFF1D3254, 0xFF8B5CF6, 0.16f, 0.35f, "Future"),
+                  new Preset("Competitive FPS", 0xFF2D5C94, 0xFFA6C9EB, 0xFF10B981, 0.04f, 0.05f, "Voxel"),
+                  new Preset("Vanilla Classic", 0xFF3D79BD, 0xFFB8D7F5, 0xFF1D4ED8, 0.00f, 0.00f, "ShadowMap")
+              };
+              final String[][] places = {
+                  {"142823291", "Murder Mystery 2 (Оригинал)", "Nikilis · Топ выбор"},
+                  {"8942105731", "Неоновый Мегаполис RP", "Vortex Guild · Future"},
+                  {"7419023318", "Тактический Полигон 5v5", "ApexBlock · Шутер"},
+                  {"6308194420", "Небесная Цитадель", "CloudCraft · Приключения"},
+                  {"9521048812", "Ночной Серпантин: Drift", "TougeWorks · Гонки"}
+              };
+              final int[] fCols = {0xFF1D4ED8, 0xFF38BDF8, 0xFF8B5CF6, 0xFFF59E0B, 0xFFEF4444, 0xFF10B981, 0xFFEC4899};
+              final int[] cCols = {0xFFFFFFFF, 0xFF60A5FA, 0xFF34D399, 0xFFF43F5E, 0xFFFACC15, 0xFFA78BFA};
+
+              SharedPreferences prefs;
+              String preset="Future Cinema", crossStyle="circle-cross", hudCorner="top-left", api="Vulkan", light="Future";
+              int skyTop=0xFF1B355C, skyHor=0xFFC98A63, fCol=0xFF1D4ED8, crossCol=0xFF60A5FA, fps=120;
+              float fOp=0.10f, vig=0.25f, crossSz=8f, crossTh=2f;
+              boolean filterOn=true, crossOn=true, hudOn=true;
+
+              FrameLayout host; PreviewView pv; TextView status, jsonTv; Button topBtn; TextView[] tabs = new TextView[4];
+
+              @Override protected void onCreate(Bundle b) {
+                  super.onCreate(b);
+                  prefs = getSharedPreferences(VisualOverlayService.PREFS, MODE_PRIVATE);
+                  preset=prefs.getString("preset",preset); skyTop=prefs.getInt("skyTop",skyTop); skyHor=prefs.getInt("skyHor",skyHor);
+                  filterOn=prefs.getBoolean("filterOn",filterOn); fCol=prefs.getInt("fCol",fCol); fOp=prefs.getFloat("fOp",fOp); vig=prefs.getFloat("vig",vig);
+                  crossOn=prefs.getBoolean("crossOn",crossOn); crossCol=prefs.getInt("crossCol",crossCol); crossStyle=prefs.getString("crossStyle",crossStyle);
+                  crossSz=prefs.getFloat("crossSz",crossSz); crossTh=prefs.getFloat("crossTh",crossTh); hudOn=prefs.getBoolean("hudOn",hudOn);
+                  hudCorner=prefs.getString("hudCorner",hudCorner); fps=prefs.getInt("fps",fps); api=prefs.getString("api",api); light=prefs.getString("light",light);
+
+                  LinearLayout root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setBackgroundColor(0xFF0B0E14);
+                  LinearLayout hdr = new LinearLayout(this); hdr.setGravity(Gravity.CENTER_VERTICAL); hdr.setBackgroundColor(0xFF0F131C); hdr.setPadding(dp(16),dp(36),dp(16),dp(12));
+                  LinearLayout bc = new LinearLayout(this); bc.setOrientation(LinearLayout.VERTICAL);
+                  TextView br = new TextView(this); br.setText("BloxAura"); br.setTextColor(Color.WHITE); br.setTextSize(19f); br.setTypeface(Typeface.DEFAULT_BOLD);
+                  status = new TextView(this); status.setTextSize(11f); bc.addView(br); bc.addView(status);
+                  hdr.addView(bc, new LinearLayout.LayoutParams(0,-2,1f));
+                  topBtn = new Button(this); topBtn.setAllCaps(false); topBtn.setTextSize(12f); topBtn.setTextColor(Color.WHITE); topBtn.setPadding(dp(14),dp(8),dp(14),dp(8));
+                  topBtn.setOnClickListener(v -> {
+                      if (VisualOverlayService.isRunning) { stopService(new Intent(this, VisualOverlayService.class)); updateHeader(); }
+                      else launchRoblox(null);
+                  });
+                  hdr.addView(topBtn); root.addView(hdr);
+
+                  host = new FrameLayout(this); root.addView(host, new LinearLayout.LayoutParams(-1,0,1f));
+                  LinearLayout nav = new LinearLayout(this); nav.setBackgroundColor(0xFF0F131C); nav.setPadding(dp(8),dp(8),dp(8),dp(12));
+                  String[] names = {"Студия", "Плейсы", "Прицел", "Флаги"};
+                  for (int i=0;i<4;i++) { final int idx=i; TextView t=new TextView(this); t.setText(names[i]); t.setGravity(Gravity.CENTER); t.setTextSize(12f); t.setTypeface(Typeface.DEFAULT_BOLD);
+                      t.setPadding(dp(4),dp(12),dp(4),dp(12)); t.setOnClickListener(v -> openTab(idx));
+                      LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,-2,1f); lp.setMargins(dp(4),0,dp(4),0); nav.addView(t,lp); tabs[i]=t; }
+                  root.addView(nav); setContentView(root); updateHeader(); openTab(0);
+              }
+
+              @Override protected void onResume() { super.onResume(); updateHeader(); }
+
+              void updateHeader() {
+                  if (!Settings.canDrawOverlays(this)) { status.setText("Нужно разрешение «Поверх окон»"); status.setTextColor(0xFFFBBF24); topBtn.setText("Разрешить и старт"); topBtn.setBackground(bg(0xFF2563EB,12,0)); }
+                  else if (VisualOverlayService.isRunning) { status.setText("Активен · " + preset); status.setTextColor(0xFF34D399); topBtn.setText("Выключить"); topBtn.setBackground(bg(0xFFEF4444,12,0)); }
+                  else { status.setText("Готов · " + preset); status.setTextColor(0xFF94A3B8); topBtn.setText("Запуск в Roblox"); topBtn.setBackground(bg(0xFF2563EB,12,0)); }
+              }
+
+              void sync() {
+                  prefs.edit().putString("preset",preset).putInt("skyTop",skyTop).putInt("skyHor",skyHor).putBoolean("filterOn",filterOn)
+                      .putInt("fCol",fCol).putFloat("fOp",fOp).putFloat("vig",vig).putBoolean("crossOn",crossOn).putInt("crossCol",crossCol)
+                      .putString("crossStyle",crossStyle).putFloat("crossSz",crossSz).putFloat("crossTh",crossTh).putBoolean("hudOn",hudOn)
+                      .putString("hudCorner",hudCorner).putInt("fps",fps).putString("api",api).putString("light",light).apply();
+                  if (pv != null) pv.invalidate();
+                  if (jsonTv != null) jsonTv.setText(makeJson());
+                  if (VisualOverlayService.isRunning) {
+                      Intent i = new Intent(this, VisualOverlayService.class);
+                      if (Build.VERSION.SDK_INT >= 26) startForegroundService(i); else startService(i);
+                  }
+              }
+
+              void openTab(int tab) {
+                  for (int i=0;i<4;i++) { tabs[i].setTextColor(i==tab?Color.WHITE:0xFF94A3B8); tabs[i].setBackground(bg(i==tab?0xFF2563EB:0xFF161B26,12,i==tab?0:0x1AFFFFFF)); }
+                  host.removeAllViews(); ScrollView sv = new ScrollView(this); LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(dp(16),dp(14),dp(16),dp(24));
+                  if (tab == 0) {
+                      pv = new PreviewView(this); LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(-1, dp(185)); plp.setMargins(0,0,0,dp(12)); box.addView(pv, plp);
+                      LinearLayout pc = card(); pc.addView(title("Пресеты графики"));
+                      HorizontalScrollView hsv = new HorizontalScrollView(this); LinearLayout row = new LinearLayout(this);
+                      for (Preset p : presets) {
+                          LinearLayout ch = new LinearLayout(this); ch.setOrientation(LinearLayout.VERTICAL); ch.setPadding(dp(14),dp(10),dp(14),dp(10));
+                          boolean s = p.n.equals(preset); ch.setBackground(bg(s?0xFF1E3A8A:0xFF0F131C,12,s?0xFF60A5FA:0x1FFFFFFF));
+                          TextView t1 = new TextView(this); t1.setText(p.n); t1.setTextColor(Color.WHITE); t1.setTextSize(13f); t1.setTypeface(Typeface.DEFAULT_BOLD);
+                          TextView t2 = new TextView(this); t2.setText(p.l+" · "+Math.round(p.op*100)+"%"); t2.setTextColor(0xFF94A3B8); t2.setTextSize(11f);
+                          ch.addView(t1); ch.addView(t2);
+                          ch.setOnClickListener(v -> { preset=p.n; skyTop=p.top; skyHor=p.hor; fCol=p.col; fOp=p.op; vig=p.vig; light=p.l; filterOn=p.op>0.005f; sync(); updateHeader(); openTab(0); });
+                          LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2,-2); lp.setMargins(0,dp(8),dp(8),dp(4)); row.addView(ch, lp);
+                      }
+                      hsv.addView(row); pc.addView(hsv); box.addView(pc);
+                      LinearLayout fc = card();
+                      fc.addView(swRow("Цветовой фильтр", filterOn, (b,c) -> { filterOn=c; sync(); }));
+                      fc.addView(palRow("Оттенок", fCols, fCol, c -> { fCol=c; filterOn=true; sync(); openTab(0); }));
+                      fc.addView(seekRow("Плотность", Math.round(fOp*100), 60, "%", v -> { fOp=v/100f; sync(); }));
+                      fc.addView(seekRow("Виньетка", Math.round(vig*100), 70, "%", v -> { vig=v/100f; sync(); }));
+                      box.addView(fc);
+                  } else if (tab == 1) {
+                      LinearLayout cc = card(); cc.addView(title("Place ID или ссылка Roblox"));
+                      EditText ed = new EditText(this); ed.setHint("Например: 142823291"); ed.setHintTextColor(0xFF64748B); ed.setTextColor(Color.WHITE); ed.setTextSize(13f);
+                      ed.setPadding(dp(12),dp(12),dp(12),dp(12)); ed.setBackground(bg(0xFF0B0E14,10,0x26FFFFFF));
+                      LinearLayout.LayoutParams elp = new LinearLayout.LayoutParams(-1,-2); elp.setMargins(0,dp(8),0,dp(10)); cc.addView(ed, elp);
+                      Button go = btn("Включить оверлей и открыть Place ID", 0xFF2563EB);
+                      go.setOnClickListener(v -> {
+                          java.util.regex.Matcher m = java.util.regex.Pattern.compile("[0-9]{5,}").matcher(ed.getText().toString());
+                          String id = m.find() ? m.group() : ed.getText().toString().replaceAll("[^0-9]+", "");
+                          if (id.isEmpty()) Toast.makeText(this, "Введите числовой Place ID", Toast.LENGTH_SHORT).show();
+                          else launchRoblox(id);
+                      });
+                      cc.addView(go); box.addView(cc);
+                      for (String[] pl : places) {
+                          LinearLayout c = card();
+                          TextView t1 = new TextView(this); t1.setText(pl[1]); t1.setTextColor(Color.WHITE); t1.setTextSize(15f); t1.setTypeface(Typeface.DEFAULT_BOLD);
+                          TextView t2 = new TextView(this); t2.setText(pl[2]+" · ID "+pl[0]); t2.setTextColor(0xFF94A3B8); t2.setTextSize(12f); t2.setPadding(0,dp(3),0,dp(10));
+                          Button pb = btn("Открыть с оверлеем BloxAura", 0xFF1E293B); pb.setOnClickListener(v -> launchRoblox(pl[0]));
+                          c.addView(t1); c.addView(t2); c.addView(pb); box.addView(c);
+                      }
+                  } else if (tab == 2) {
+                      pv = new PreviewView(this); LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(-1, dp(165)); plp.setMargins(0,0,0,dp(12)); box.addView(pv, plp);
+                      LinearLayout cc = card();
+                      cc.addView(swRow("Кастомный прицел", crossOn, (b,c) -> { crossOn=c; sync(); }));
+                      cc.addView(chips("Форма", new String[]{"circle-cross","cross","dot","t-shape"}, new String[]{"Круг+Крест","Крест","Точка","T-прицел"}, crossStyle, v -> { crossStyle=v; sync(); openTab(2); }));
+                      cc.addView(palRow("Цвет прицела", cCols, crossCol, c -> { crossCol=c; sync(); openTab(2); }));
+                      cc.addView(seekRow("Размер", Math.round(crossSz), 20, " dp", v -> { crossSz=Math.max(2f,v); sync(); }));
+                      cc.addView(seekRow("Толщина", Math.round(crossTh), 6, " dp", v -> { crossTh=Math.max(1f,v); sync(); }));
+                      box.addView(cc);
+                      LinearLayout hc = card();
+                      hc.addView(swRow("HUD-плашка поверх игры", hudOn, (b,c) -> { hudOn=c; sync(); }));
+                      hc.addView(chips("Угол HUD", new String[]{"top-left","top-right","bottom-left","bottom-right"}, new String[]{"Верх лево","Верх право","Низ лево","Низ право"}, hudCorner, v -> { hudCorner=v; sync(); openTab(2); }));
+                      box.addView(hc);
+                  } else {
+                      LinearLayout fc = card(); fc.addView(title("FastFlags (ClientAppSettings.json)"));
+                      fc.addView(chips("Лимит FPS", new String[]{"60","90","120","240","0"}, new String[]{"60","90","120","240","Без лимита"}, String.valueOf(fps), v -> { fps=Integer.parseInt(v); sync(); openTab(3); }));
+                      fc.addView(chips("API", new String[]{"Vulkan","OpenGL"}, new String[]{"Vulkan","OpenGL"}, api, v -> { api=v; sync(); openTab(3); }));
+                      fc.addView(chips("Освещение", new String[]{"Future","ShadowMap","Voxel"}, new String[]{"Future","ShadowMap","Voxel"}, light, v -> { light=v; sync(); openTab(3); }));
+                      jsonTv = new TextView(this); jsonTv.setText(makeJson()); jsonTv.setTextColor(0xFF93C5FD); jsonTv.setTextSize(11f); jsonTv.setTypeface(Typeface.MONOSPACE);
+                      jsonTv.setPadding(dp(12),dp(12),dp(12),dp(12)); jsonTv.setBackground(bg(0xFF080A0F,10,0x1FFFFFFF));
+                      LinearLayout.LayoutParams jlp = new LinearLayout.LayoutParams(-1,-2); jlp.setMargins(0,dp(10),0,dp(10)); fc.addView(jsonTv, jlp);
+                      Button cb = btn("Скопировать JSON", 0xFF2563EB);
+                      cb.setOnClickListener(v -> {
+                          ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                          if (cm != null) { cm.setPrimaryClip(ClipData.newPlainText("ClientAppSettings.json", makeJson())); Toast.makeText(this, "Скопировано", Toast.LENGTH_SHORT).show(); }
+                      });
+                      fc.addView(cb); box.addView(fc);
+                  }
+                  sv.addView(box); host.addView(sv);
+              }
+
+              String makeJson() {
+                  int fv = fps == 0 ? 9999 : fps;
+                  return "{\n  \"DFIntTaskSchedulerTargetFps\": " + fv + ",\n  \"DFIntMobileHardwareMaxFps\": " + (fps==0?120:fps)
+                      + ",\n  \"FFlagDebugGraphicsPrefer" + api + "\": true,\n  \"FFlagDebugForceFutureIsBrightPhase" + ("Future".equals(light)?3:("ShadowMap".equals(light)?2:1)) + "\": true\n}";
+              }
+
+              void launchRoblox(String placeId) {
+                  if (!Settings.canDrawOverlays(this)) {
+                      startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getPackageName())));
+                      Toast.makeText(this, "Разрешите «Поверх других окон» и нажмите ещё раз", Toast.LENGTH_LONG).show(); return;
+                  }
+                  sync();
+                  Intent svc = new Intent(this, VisualOverlayService.class);
+                  if (Build.VERSION.SDK_INT >= 26) startForegroundService(svc); else startService(svc);
+                  updateHeader();
+                  String u = (placeId != null && !placeId.isEmpty()) ? "roblox://placeId=" + placeId : "roblox://navigation/home";
+                  try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(u))); }
+                  catch (Exception e) { Toast.makeText(this, "Оверлей запущен! Откройте Roblox.", Toast.LENGTH_SHORT).show(); }
+              }
+
+              LinearLayout card() { LinearLayout c=new LinearLayout(this); c.setOrientation(LinearLayout.VERTICAL); c.setPadding(dp(14),dp(14),dp(14),dp(14)); c.setBackground(bg(0xFF121620,14,0x1AFFFFFF)); LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2); lp.setMargins(0,0,0,dp(12)); c.setLayoutParams(lp); return c; }
+              TextView title(String t) { TextView tv=new TextView(this); tv.setText(t); tv.setTextColor(Color.WHITE); tv.setTextSize(14f); tv.setTypeface(Typeface.DEFAULT_BOLD); return tv; }
+              Button btn(String t, int c) { Button b=new Button(this); b.setText(t); b.setAllCaps(false); b.setTextColor(Color.WHITE); b.setTextSize(13f); b.setPadding(dp(14),dp(11),dp(14),dp(11)); b.setBackground(bg(c,12,0)); return b; }
+              View swRow(String t, boolean chk, CompoundButton.OnCheckedChangeListener l) { LinearLayout r=new LinearLayout(this); r.setGravity(Gravity.CENTER_VERTICAL); r.setPadding(0,dp(4),0,dp(8)); TextView tv=title(t); r.addView(tv,new LinearLayout.LayoutParams(0,-2,1f)); Switch s=new Switch(this); s.setChecked(chk); s.setOnCheckedChangeListener(l); r.addView(s); return r; }
+              interface IntCb { void onVal(int v); }
+              interface StrCb { void onVal(String v); }
+              View seekRow(String lbl, int init, int max, String suf, IntCb cb) {
+                  LinearLayout b=new LinearLayout(this); b.setOrientation(LinearLayout.VERTICAL); b.setPadding(0,dp(6),0,dp(4));
+                  LinearLayout top=new LinearLayout(this); TextView l=new TextView(this); l.setText(lbl); l.setTextColor(0xFFCBD5E1); l.setTextSize(12f); top.addView(l,new LinearLayout.LayoutParams(0,-2,1f));
+                  TextView v=new TextView(this); v.setText(init+suf); v.setTextColor(0xFF60A5FA); v.setTextSize(12f); top.addView(v); b.addView(top);
+                  SeekBar sb=new SeekBar(this); sb.setMax(max); sb.setProgress(Math.min(max,Math.max(0,init)));
+                  sb.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                      @Override public void onProgressChanged(SeekBar s, int p, boolean u) { v.setText(p+suf); if (u) cb.onVal(p); }
+                      @Override public void onStartTrackingTouch(SeekBar s) {}
+                      @Override public void onStopTrackingTouch(SeekBar s) {}
+                  }); b.addView(sb); return b;
+              }
+              View palRow(String lbl, int[] cols, int sel, IntCb cb) {
+                  LinearLayout b=new LinearLayout(this); b.setOrientation(LinearLayout.VERTICAL); b.setPadding(0,dp(6),0,dp(6));
+                  TextView tv=new TextView(this); tv.setText(lbl); tv.setTextColor(0xFFCBD5E1); tv.setTextSize(12f); tv.setPadding(0,0,0,dp(8)); b.addView(tv);
+                  LinearLayout r=new LinearLayout(this);
+                  for (int c : cols) { View d=new View(this); GradientDrawable gd=new GradientDrawable(); gd.setShape(GradientDrawable.OVAL); gd.setColor(c); gd.setStroke(dp(c==sel?3:1), c==sel?Color.WHITE:0x44FFFFFF); d.setBackground(gd); d.setOnClickListener(v -> cb.onVal(c)); LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(dp(30),dp(30)); lp.setMargins(0,0,dp(10),0); r.addView(d,lp); }
+                  b.addView(r); return b;
+              }
+              View chips(String lbl, String[] vals, String[] ts, String cur, StrCb cb) {
+                  LinearLayout b=new LinearLayout(this); b.setOrientation(LinearLayout.VERTICAL); b.setPadding(0,dp(8),0,dp(4));
+                  TextView tv=new TextView(this); tv.setText(lbl); tv.setTextColor(0xFFCBD5E1); tv.setTextSize(12f); tv.setPadding(0,0,0,dp(6)); b.addView(tv);
+                  HorizontalScrollView hsv=new HorizontalScrollView(this); LinearLayout r=new LinearLayout(this);
+                  for (int i=0;i<vals.length;i++) { final String val=vals[i]; boolean s=val.equals(cur); TextView ch=new TextView(this); ch.setText(ts[i]); ch.setTextColor(s?Color.WHITE:0xFF94A3B8); ch.setTextSize(12f);
+                      ch.setPadding(dp(12),dp(8),dp(12),dp(8)); ch.setBackground(bg(s?0xFF2563EB:0xFF0F131C,10,s?0:0x1FFFFFFF)); ch.setOnClickListener(v -> cb.onVal(val));
+                      LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-2,-2); lp.setMargins(0,0,dp(8),0); r.addView(ch,lp); }
+                  hsv.addView(r); b.addView(hsv); return b;
+              }
+              GradientDrawable bg(int fill, int rDp, int stroke) { GradientDrawable gd=new GradientDrawable(); gd.setColor(fill); gd.setCornerRadius(dp(rDp)); if (stroke!=0) gd.setStroke(dp(1),stroke); return gd; }
+              int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
+
+              class PreviewView extends View {
+                  final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG), tp = new Paint(Paint.ANTI_ALIAS_FLAG);
+                  PreviewView(Context c) { super(c); tp.setColor(Color.WHITE); }
+                  @Override protected void onDraw(Canvas cv) {
+                      float w=getWidth(), h=getHeight(), d=getResources().getDisplayMetrics().density, r=14f*d; RectF cr=new RectF(0,0,w,h);
+                      p.setStyle(Paint.Style.FILL); p.setShader(new LinearGradient(0,0,0,h*0.68f,skyTop,skyHor,Shader.TileMode.CLAMP)); cv.drawRoundRect(cr,r,r,p); p.setShader(null);
+                      p.setColor(0x55FFD9A8); cv.drawCircle(w*0.78f,h*0.25f,22f*d,p); p.setColor(0xFFFFE4B5); cv.drawCircle(w*0.78f,h*0.25f,11f*d,p);
+                      p.setColor(0xFF1F2937); cv.drawRect(0,h*0.65f,w,h,p); p.setColor(0x3360A5FA); p.setStrokeWidth(1f*d);
+                      for (int gx=0;gx<10;gx++) { float x=(w/9f)*gx; cv.drawLine(x,h*0.65f,w*0.5f+(x-w*0.5f)*1.45f,h,p); }
+                      float ax=w*0.5f, base=h*0.78f; p.setStyle(Paint.Style.FILL);
+                      p.setColor(0xFF334155); cv.drawRoundRect(new RectF(ax-12*d,base-24*d,ax-1*d,base),3*d,3*d,p); cv.drawRoundRect(new RectF(ax+1*d,base-24*d,ax+12*d,base),3*d,3*d,p);
+                      p.setColor(0xFF1E40AF); cv.drawRoundRect(new RectF(ax-14*d,base-52*d,ax+14*d,base-24*d),4*d,4*d,p);
+                      p.setColor(0xFF475569); cv.drawRoundRect(new RectF(ax-22*d,base-50*d,ax-15*d,base-25*d),3*d,3*d,p); cv.drawRoundRect(new RectF(ax+15*d,base-50*d,ax+22*d,base-25*d),3*d,3*d,p);
+                      p.setColor(0xFFE2E8F0); cv.drawRoundRect(new RectF(ax-10*d,base-72*d,ax+10*d,base-53*d),5*d,5*d,p);
+                      p.setColor(0xFF38BDF8); cv.drawRoundRect(new RectF(ax-7*d,base-66*d,ax+7*d,base-61*d),2*d,2*d,p);
+                      if (filterOn && fOp>0.005f) { p.setColor(Color.argb(Math.round(Math.min(0.65f,fOp)*255f),Color.red(fCol),Color.green(fCol),Color.blue(fCol))); cv.drawRoundRect(cr,r,r,p); }
+                      if (filterOn && vig>0.01f) { p.setShader(new RadialGradient(w/2f,h/2f,Math.max(w,h)*0.7f,new int[]{0,Color.argb(Math.round(vig*220),0,0,0)},new float[]{0.5f,1f},Shader.TileMode.CLAMP)); cv.drawRoundRect(cr,r,r,p); p.setShader(null); }
+                      if (crossOn) {
+                          float cx=w/2f, cy=h/2f, sz=crossSz*d, gp=4f*d; p.setColor(crossCol); p.setStrokeWidth(crossTh*d); p.setStrokeCap(Paint.Cap.ROUND);
+                          if ("dot".equals(crossStyle)) { p.setStyle(Paint.Style.FILL); cv.drawCircle(cx,cy,Math.max(2f*d,crossTh*d),p); }
+                          else if ("t-shape".equals(crossStyle)) { p.setStyle(Paint.Style.STROKE); cv.drawLine(cx,cy+gp,cx,cy+gp+sz,p); cv.drawLine(cx-gp-sz,cy,cx-gp,cy,p); cv.drawLine(cx+gp,cy,cx+gp+sz,cy,p); }
+                          else { p.setStyle(Paint.Style.STROKE); cv.drawLine(cx,cy-gp-sz,cx,cy-gp,p); cv.drawLine(cx,cy+gp,cx,cy+gp+sz,p); cv.drawLine(cx-gp-sz,cy,cx-gp,cy,p); cv.drawLine(cx+gp,cy,cx+gp+sz,cy,p);
+                              if ("circle-cross".equals(crossStyle)) { p.setStrokeWidth(Math.max(1f*d,crossTh*0.75f*d)); cv.drawCircle(cx,cy,gp+sz*0.75f,p); } }
+                      }
+                      if (hudOn) {
+                          p.setStyle(Paint.Style.FILL); p.setColor(0xB80B0E14); tp.setTextSize(10.5f*d);
+                          String lbl = "BloxAura · " + preset + " · " + (fps==0?"MAX":fps) + " FPS";
+                          float tw = tp.measureText(lbl), bx = hudCorner.contains("right")?w-tw-26f*d:10f*d, by = hudCorner.contains("bottom")?h-32f*d:10f*d;
+                          cv.drawRoundRect(new RectF(bx,by,bx+tw+16f*d,by+22f*d),7f*d,7f*d,p); cv.drawText(lbl,bx+8f*d,by+15f*d,tp);
+                      }
+                  }
+              }
+          }
+          BLOXEOF
+
       - uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
+
       - name: Accept Android SDK licenses
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
+
       - name: Build Debug APK
         run: gradle assembleDebug
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
